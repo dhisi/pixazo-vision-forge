@@ -42,7 +42,7 @@ const MAX_QUEUE_WAIT_MS = 420_000;
  * Retry-After header. A provider-supplied multi-minute wait is what kept one
  * prompt request open for ~15 minutes while heartbeats made the page look busy.
  */
-const MAX_RETRY_DELAY_MS = 5_000;
+const MAX_RETRY_DELAY_MS = 20_000;
 
 let lastUsed = 0;
 let inFlight = 0;
@@ -127,7 +127,7 @@ export function agnesChat(user: string, opts: ChatOptions = {}): Promise<string>
 async function callAgnes(user: string, opts: ChatOptions): Promise<string> {
   await acquire();
   try {
-    const attempts = opts.attempts ?? 6;
+    const attempts = opts.attempts ?? 8;
     let lastErr = "";
 
     for (let attempt = 0; attempt < attempts; attempt++) {
@@ -191,10 +191,16 @@ async function callAgnes(user: string, opts: ChatOptions): Promise<string> {
         if (busy(res.status, body)) {
           // Retry-After is CLAMPED: a rate-limited account (Cloudflare 1015)
           // reports multi-minute waits, and honouring them froze the run.
+          // A 1015 needs a real pause though — retrying after a second only
+          // deepens the block, and a whole range of panels then failed with
+          // nothing drawn.
+          const rateLimited = res.status === 429 || /1015/.test(body);
           const retryAfter = Number(res.headers.get("retry-after") ?? 0);
-          await backoff(retryAfter > 0 ? retryAfter * 1000 + 500 : 3_000 * (attempt + 1));
+          const base = rateLimited ? 8_000 * (attempt + 1) : 3_000 * (attempt + 1);
+          await backoff(retryAfter > 0 ? retryAfter * 1000 + 500 : base);
           continue;
         }
+
         if (res.status === 400 || res.status === 401 || res.status === 403) break;
         await backoff(1_200 * (attempt + 1));
       } catch (e) {
