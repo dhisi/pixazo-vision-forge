@@ -614,17 +614,19 @@ export async function writePrompts(
   // second round for anything still unusable.
   for (let round = 0; round < 2; round++) {
     const gap = wanted.filter((n) => !byNumber.has(n));
-    if (gap.length === 0 || gap.length === wanted.length) break;
+    if (gap.length === 0) break;
     const t1 = Date.now();
     console.log(`[prompts] repair pass ${round + 1} for ${gap.length} gaps in ${from}-${to}`);
     try {
       absorb(await ask(gap, 0.5 + round * 0.2), gap);
       dropUnfaithful();
+      mainError = undefined;
       console.log(
         `[prompts] after repair ${round + 1} ${from}-${to}: ${byNumber.size}/${count} filled in ${Date.now() - t1}ms`,
       );
     } catch (e) {
       if (e instanceof KilledError) throw e;
+      mainError = e;
       console.error(
         `[prompts] repair FAILED ${from}-${to} after ${Date.now() - t1}ms:`,
         e instanceof Error ? e.message : e,
@@ -632,6 +634,16 @@ export async function writePrompts(
       break;
     }
   }
+
+  // The whole range came back empty because the writing service itself failed
+  // (bad/missing key, outage, rate limit). Report that instead of returning a
+  // range of blanks: silently blank prompts made every panel show "failed" with
+  // no reason, and pushed the browser into its slow one-line-at-a-time repair.
+  if (byNumber.size === 0) {
+    const why = mainError instanceof Error ? mainError.message : String(mainError ?? "no prompts");
+    throw new Error(`Prompt writer unavailable for lines ${from}-${to}: ${why}`);
+  }
+
 
   // Duplicate guard: two timestamps must never share one written prompt, or
   // one line's picture ends up standing in for another moment entirely.
