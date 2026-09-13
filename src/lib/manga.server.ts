@@ -587,16 +587,38 @@ export async function writePrompts(
     );
   }
 
-  // Repair only what is genuinely missing (a truncated answer), in as few
-  // extra requests as possible: one request for all the gaps together.
-  const gap = wanted.filter((n) => !byNumber.has(n));
-  if (gap.length > 0 && gap.length < wanted.length) {
+  /**
+   * Timestamp fidelity, applied BEFORE the repair pass.
+   *
+   * A prompt that shares no content word with its OWN line was written from
+   * some other part of the script. These used to be discarded only at the very
+   * end, after the repair pass had already run, so the line came back empty and
+   * the panel failed. Dropping them here folds them into the same repair
+   * request as truncated gaps.
+   */
+  const dropUnfaithful = () => {
+    for (const n of wanted) {
+      const own = byNumber.get(n);
+      if (!own) continue;
+      const seg = all[n - 1] as Segment;
+      if (isEnglishish(seg.text) && !mentionsLine(own, seg.text)) byNumber.delete(n);
+    }
+  };
+  dropUnfaithful();
+
+  // Repair what is missing (a truncated answer or a rejected prompt) in as few
+  // extra requests as possible: one request for all the gaps together, and a
+  // second round for anything still unusable.
+  for (let round = 0; round < 2; round++) {
+    const gap = wanted.filter((n) => !byNumber.has(n));
+    if (gap.length === 0 || gap.length === wanted.length) break;
     const t1 = Date.now();
-    console.log(`[prompts] repair pass for ${gap.length} gaps in ${from}-${to}`);
+    console.log(`[prompts] repair pass ${round + 1} for ${gap.length} gaps in ${from}-${to}`);
     try {
-      absorb(await ask(gap, 0.5), gap);
+      absorb(await ask(gap, 0.5 + round * 0.2), gap);
+      dropUnfaithful();
       console.log(
-        `[prompts] after repair ${from}-${to}: ${byNumber.size}/${count} filled in ${Date.now() - t1}ms`,
+        `[prompts] after repair ${round + 1} ${from}-${to}: ${byNumber.size}/${count} filled in ${Date.now() - t1}ms`,
       );
     } catch (e) {
       if (e instanceof KilledError) throw e;
@@ -604,6 +626,7 @@ export async function writePrompts(
         `[prompts] repair FAILED ${from}-${to} after ${Date.now() - t1}ms:`,
         e instanceof Error ? e.message : e,
       );
+      break;
     }
   }
 
