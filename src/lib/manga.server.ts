@@ -572,6 +572,7 @@ export async function writePrompts(
   // small so the writer can give every timestamp enough attention.
   const t0 = Date.now();
   console.log(`[prompts] START lines ${from}-${to} (${count} lines)`);
+  let mainError: unknown;
   try {
     const raw = await ask(wanted, 0.7);
     console.log(
@@ -581,11 +582,13 @@ export async function writePrompts(
     console.log(`[prompts] after main pass ${from}-${to}: ${byNumber.size}/${count} filled`);
   } catch (e) {
     if (e instanceof KilledError) throw e;
+    mainError = e;
     console.error(
       `[prompts] main pass FAILED ${from}-${to} after ${Date.now() - t0}ms:`,
       e instanceof Error ? e.message : e,
     );
   }
+
 
   /**
    * Timestamp fidelity, applied BEFORE the repair pass.
