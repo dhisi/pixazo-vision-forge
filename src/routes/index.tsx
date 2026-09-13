@@ -678,14 +678,40 @@ function Index() {
           targets.forEach((s) => record(s.index, { status: "prompting" }));
           try {
             const wanted = targets.map((s) => s.index + 1);
-            const res = await getPrompts({
-              bible: b,
-              from: range.from,
-              to: range.to,
-              lines: wanted,
-              segments: allSegments,
-            });
-            const prompts = res.prompts as string[];
+            // A whole range must never be abandoned because the writing
+            // service was momentarily rate limited: retry the RANGE (with a
+            // pause) instead of dumping fifteen panels into the slow
+            // one-line-at-a-time repair, which is what made a long script
+            // take days.
+            let res: { prompts: string[] } | undefined;
+            let lastErr: unknown;
+            for (let attempt = 0; attempt < 4 && !cancelRef.current; attempt++) {
+              if (attempt > 0) {
+                setNote(
+                  `Writer busy — retrying lines ${range.from}-${range.to} (try ${attempt + 1})`,
+                );
+                await new Promise((r) => setTimeout(r, 5_000 * attempt));
+                if (cancelRef.current) break;
+              }
+              try {
+                res = (await getPrompts({
+                  bible: b,
+                  from: range.from,
+                  to: range.to,
+                  lines: wanted,
+                  segments: allSegments,
+                })) as { prompts: string[] };
+                break;
+              } catch (e) {
+                lastErr = e;
+                console.error(
+                  `[client] range ${range.from}-${range.to} attempt ${attempt + 1} failed:`,
+                  e instanceof Error ? e.message : e,
+                );
+              }
+            }
+            if (!res) throw lastErr ?? new Error("prompt missing");
+            const prompts = res.prompts;
             targets.forEach((s, position) => {
               // Slot-aligned: prompts[i] belongs to this exact requested
               // timestamp. An empty slot stays empty (never inherits a
@@ -704,6 +730,7 @@ function Index() {
             console.error(`[client] range ${range.from}-${range.to} failed: ${msg}`);
             targets.forEach((s) => record(s.index, { status: "error", error: msg }));
           }
+
           promptDone += targets.length;
           tick();
           await checkpoint();
